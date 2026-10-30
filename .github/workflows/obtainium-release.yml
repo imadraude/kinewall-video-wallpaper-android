@@ -1,0 +1,146 @@
+name: Obtainium Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kinewall-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, sign and publish APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify stable tag and main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Expected a stable version tag such as v0.9.1"
+            exit 1
+          fi
+          major=$((10#${BASH_REMATCH[1]}))
+          minor=$((10#${BASH_REMATCH[2]}))
+          patch=$((10#${BASH_REMATCH[3]}))
+          if (( major > 2000 || minor > 999 || patch > 999 )); then
+            echo "::error::Version segment exceeds the supported range"
+            exit 1
+          fi
+          version_code=$((major * 1000000 + minor * 1000 + patch))
+          if (( version_code <= 8 || version_code > 2100000000 )); then
+            echo "::error::Android versionCode must be above 8 and at most 2100000000"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::Only commits already merged into main can be released"
+            exit 1
+          fi
+          echo "KINEWALL_RELEASE_VERSION_NAME=${tag#v}" >> "${GITHUB_ENV}"
+          echo "KINEWALL_RELEASE_VERSION_CODE=${version_code}" >> "${GITHUB_ENV}"
+          echo "RELEASE_TAG=${tag}" >> "${GITHUB_ENV}"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 37.1
+        shell: bash
+        run: |
+          sdkmanager --install "platforms;android-37.1" "build-tools;36.0.0"
+          test -f "${ANDROID_SDK_ROOT}/platforms/android-37.1/android.jar"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Prepare private release signing key
+        shell: bash
+        env:
+          KINEWALL_KEYSTORE_BASE64: ${{ secrets.KINEWALL_KEYSTORE_BASE64 }}
+          KINEWALL_KEYSTORE_PASSWORD: ${{ secrets.KINEWALL_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KINEWALL_KEYSTORE_BASE64}" || -z "${KINEWALL_KEYSTORE_PASSWORD}" ]]; then
+            echo "::error::Configure KINEWALL_KEYSTORE_BASE64 and KINEWALL_KEYSTORE_PASSWORD in GitHub Actions secrets"
+            exit 1
+          fi
+          key_file="${RUNNER_TEMP}/kinewall-release.p12"
+          printf '%s' "${KINEWALL_KEYSTORE_BASE64}" | base64 --decode > "${key_file}"
+          chmod 600 "${key_file}"
+          test -s "${key_file}"
+          echo "KINEWALL_KEYSTORE_FILE=${key_file}" >> "${GITHUB_ENV}"
+
+      - name: Test and build signed release APK
+        shell: bash
+        env:
+          KINEWALL_KEYSTORE_PASSWORD: ${{ secrets.KINEWALL_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleRelease
+
+      - name: Verify signature and prepare Obtainium asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+          test -s "${signed_apk}"
+          "${ANDROID_SDK_ROOT}/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${signed_apk}"
+          mkdir -p dist
+          filename="KineWall-${RELEASE_TAG}-universal.apk"
+          cp "${signed_apk}" "dist/${filename}"
+          (
+            cd dist
+            sha256sum "${filename}" > "${filename}.sha256"
+          )
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${RELEASE_TAG}" dist/* \
+            --verify-tag \
+            --title "KineWall ${RELEASE_TAG}" \
+            --generate-notes \
+            --latest
+
+      - name: Save signed APK as workflow artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kinewall-release-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test reports if release failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kinewall-release-test-reports-${{ github.run_number }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
