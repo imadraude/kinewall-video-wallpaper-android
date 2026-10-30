@@ -719,6 +719,9 @@ class VideoWallpaperService : WallpaperService() {
                 player.start()
                 notPlayingWhileVisibleReported = false
                 scheduleHeartbeat()
+                // A black surface on initial playback should recover after the first
+                // probe, rather than waiting for the 15-second heartbeat.
+                scheduleStallProbe(player)
 
                 DiagnosticLogger.log(
                     this@VideoWallpaperService,
