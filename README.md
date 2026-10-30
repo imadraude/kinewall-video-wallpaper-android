@@ -146,6 +146,32 @@ app/build/outputs/apk/
 
 The project can also be opened directly in Android Studio and run on an Android 11+ device.
 
+## Automated GitHub Actions builds (fork)
+
+This fork builds an **installable debug APK** and runs JVM unit tests with GitHub Actions:
+
+- Pushes to `main`, `fix/**`, and `feature/**`
+- Pull requests targeting `main`
+- Manual runs from **Actions → Android APK → Run workflow**
+
+After a successful run, open **Actions → Android APK → latest successful run → Artifacts**,
+download `kinewall-debug-<run number>`, extract the ZIP, and install the enclosed APK
+on an Android 11+ device. Artifacts are retained for 14 days.
+
+The workflow uses JDK 17, Gradle Wrapper 9.6.0, Android SDK Platform 37.1,
+and Android SDK Build Tools 36.0.0. It executes:
+
+```bash
+./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug
+```
+
+These are **debug-signed test builds**, not production releases. The debug signing
+key on GitHub-hosted runners is not stable between builds; a downloaded APK may
+require uninstalling a previously installed build (potentially deleting app data)
+before installing another APK with the same application ID. Do not upload a
+production signing keystore to the repository. Release signing should be configured
+separately using protected GitHub Secrets.
+
 ## Usage
 
 1. Open KineWall.
