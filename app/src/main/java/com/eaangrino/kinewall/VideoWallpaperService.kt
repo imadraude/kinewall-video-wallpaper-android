@@ -14,7 +14,6 @@ import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
-import kotlin.math.abs
 import kotlin.math.max
 
 class VideoWallpaperService : WallpaperService() {
@@ -148,6 +147,7 @@ class VideoWallpaperService : WallpaperService() {
         private var playerVideoUri: String? = null
         private var videoRenderer: VideoFrameRenderer? = null
         private var playerInputSurface: Surface? = null
+        private var rendererAttachPending = false
         private var isPrepared = false
         private var isPreparing = false
         private var surfaceAvailable = false
@@ -468,6 +468,7 @@ class VideoWallpaperService : WallpaperService() {
         private fun resumePlayerAfterVideoProcessing(reason: String) {
             if (
                 mediaPlayer != null ||
+                rendererAttachPending ||
                 suspendedForVideoProcessing ||
                 WallpaperMediaResourceCoordinator.isProcessingActive() ||
                 !surfaceAvailable ||
@@ -706,6 +707,10 @@ class VideoWallpaperService : WallpaperService() {
                     error
                 )
                 releasePlayer("setup_failed")
+                requestPipelineRecovery(
+                    reason = "player_setup_failed",
+                    resumePositionMs = resumePositionMs
+                )
             }
         }
 
@@ -714,6 +719,9 @@ class VideoWallpaperService : WallpaperService() {
                 player.start()
                 notPlayingWhileVisibleReported = false
                 scheduleHeartbeat()
+                // A black surface on initial playback should recover after the first
+                // probe, rather than waiting for the 15-second heartbeat.
+                scheduleStallProbe(player)
 
                 DiagnosticLogger.log(
                     this@VideoWallpaperService,
@@ -862,14 +870,10 @@ class VideoWallpaperService : WallpaperService() {
                 )
                 return
             }
-            val firstPosition = safeCurrentPosition(player) ?: return
-            val firstFramesPlayed = safeVideoFramesPlayed(player)
+            // Observe actual output frames, including videos shorter than the probe interval.
+            // Clock position can wrap to the same value in a short looping video.
+            val firstPosition = safeCurrentPosition(player)
             val firstRendererSnapshot = renderer.playbackSnapshot()
-            val duration = safeDuration(player) ?: return
-
-            if (duration <= STALL_PROBE_DELAY_MS * 2) {
-                return
-            }
 
             stallProbePending = true
 
@@ -888,72 +892,27 @@ class VideoWallpaperService : WallpaperService() {
                         return@postDelayed
                     }
 
-                    val secondPosition = safeCurrentPosition(player) ?: return@postDelayed
-                    val secondFramesPlayed = safeVideoFramesPlayed(player)
                     val secondRendererSnapshot = renderer.playbackSnapshot()
-                    val delta = abs(secondPosition - firstPosition)
-
-                    if (delta <= STALL_POSITION_TOLERANCE_MS) {
-                        DiagnosticLogger.log(
-                            this@VideoWallpaperService,
-                            "PLAYBACK_STALL_SUSPECTED",
-                            "firstPositionMs=$firstPosition, " +
-                                "secondPositionMs=$secondPosition, " +
-                                "probeDelayMs=$STALL_PROBE_DELAY_MS, " +
-                                "durationMs=$duration, " +
-                                "firstFramesPlayed=$firstFramesPlayed, " +
-                                "secondFramesPlayed=$secondFramesPlayed, " +
-                                playerSnapshot(player)
-                        )
-                        requestPipelineRecovery(
-                            reason = "playback_clock_stall",
-                            resumePositionMs = firstPosition
-                        )
-                        return@postDelayed
-                    }
-
                     if (
-                        secondRendererSnapshot.framesPresented ==
-                        firstRendererSnapshot.framesPresented
+                        PlaybackStallDetector.isStalled(
+                            firstRendererSnapshot.framesPresented,
+                            secondRendererSnapshot.framesPresented
+                        )
                     ) {
+                        val secondPosition = safeCurrentPosition(player)
                         DiagnosticLogger.log(
                             this@VideoWallpaperService,
                             "RENDERER_OUTPUT_STALL_SUSPECTED",
                             "firstPositionMs=$firstPosition, " +
                                 "secondPositionMs=$secondPosition, " +
-                                "firstFramesPresented=" +
-                                firstRendererSnapshot.framesPresented +
-                                ", secondFramesPresented=" +
-                                secondRendererSnapshot.framesPresented +
-                                ", firstFramesAvailable=" +
-                                firstRendererSnapshot.framesAvailable +
-                                ", secondFramesAvailable=" +
-                                secondRendererSnapshot.framesAvailable
-                        )
-                        requestPipelineRecovery(
-                            reason = "renderer_frames_not_presenting",
-                            resumePositionMs = firstPosition
-                        )
-                        return@postDelayed
-                    }
-
-                    if (
-                        firstFramesPlayed != null &&
-                        secondFramesPlayed != null &&
-                        secondFramesPlayed == firstFramesPlayed
-                    ) {
-                        DiagnosticLogger.log(
-                            this@VideoWallpaperService,
-                            "VIDEO_OUTPUT_STALL_SUSPECTED",
-                            "firstPositionMs=$firstPosition, " +
-                                "secondPositionMs=$secondPosition, " +
-                                "firstFramesPlayed=$firstFramesPlayed, " +
-                                "secondFramesPlayed=$secondFramesPlayed, " +
                                 "probeDelayMs=$STALL_PROBE_DELAY_MS, " +
-                                playerSnapshot(player)
+                                "firstFramesPresented=${firstRendererSnapshot.framesPresented}, " +
+                                "secondFramesPresented=${secondRendererSnapshot.framesPresented}, " +
+                                "firstFramesAvailable=${firstRendererSnapshot.framesAvailable}, " +
+                                "secondFramesAvailable=${secondRendererSnapshot.framesAvailable}"
                         )
                         requestPipelineRecovery(
-                            reason = "video_frames_not_advancing",
+                            reason = "renderer_frames_not_advancing",
                             resumePositionMs = firstPosition
                         )
                     }
@@ -1073,6 +1032,7 @@ class VideoWallpaperService : WallpaperService() {
 
             rendererGeneration += 1
             val generation = rendererGeneration
+            rendererAttachPending = true
             val renderer = VideoFrameRenderer { stage, error ->
                 DiagnosticLogger.log(
                     this@VideoWallpaperService,
@@ -1083,6 +1043,7 @@ class VideoWallpaperService : WallpaperService() {
 
                 mainHandler.post {
                     if (surfaceAvailable && generation == rendererGeneration) {
+                        rendererAttachPending = false
                         requestPipelineRecovery(
                             reason = "renderer_${stage}_failure",
                             resumePositionMs = currentResumePosition()
@@ -1107,6 +1068,7 @@ class VideoWallpaperService : WallpaperService() {
                         return@post
                     }
 
+                    rendererAttachPending = false
                     if (!inputSurface.isValid) {
                         requestPipelineRecovery(
                             reason = "renderer_input_surface_invalid",
@@ -1130,16 +1092,17 @@ class VideoWallpaperService : WallpaperService() {
             val renderer = videoRenderer
             videoRenderer = null
             playerInputSurface = null
+            rendererAttachPending = false
 
             if (renderer == null) {
                 return
             }
 
-            val releasedCleanly = renderer.releaseAndWait()
+            renderer.releaseAsync()
             DiagnosticLogger.log(
                 this@VideoWallpaperService,
-                "VIDEO_RENDERER_RELEASED",
-                "reason=$reason, completed=$releasedCleanly"
+                "VIDEO_RENDERER_RELEASE_REQUESTED",
+                "reason=$reason, asynchronous=true"
             )
         }
 
@@ -1350,7 +1313,6 @@ class VideoWallpaperService : WallpaperService() {
         private const val PAN_EPSILON_PX = 1f
         private const val HEARTBEAT_INTERVAL_MS = 15_000L
         private const val STALL_PROBE_DELAY_MS = 3_000L
-        private const val STALL_POSITION_TOLERANCE_MS = 250
         private const val RECOVERY_COOLDOWN_MS = 5_000L
     }
 }

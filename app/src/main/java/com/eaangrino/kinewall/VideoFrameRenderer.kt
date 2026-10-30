@@ -15,8 +15,6 @@ import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -26,7 +24,6 @@ internal class VideoFrameRenderer(private val onError: (stage: String, error: Th
     private val renderHandler = Handler(renderThread.looper)
     private val released = AtomicBoolean(false)
     private val failed = AtomicBoolean(false)
-    private val releaseCompleted = CountDownLatch(1)
     private val framesAvailable = AtomicLong(0L)
     private val framesPresented = AtomicLong(0L)
     private val lastFrameAvailableElapsedMs = AtomicLong(0L)
@@ -90,7 +87,6 @@ internal class VideoFrameRenderer(private val onError: (stage: String, error: Th
                 try {
                     releaseGlResources()
                 } finally {
-                    releaseCompleted.countDown()
                     renderThread.quitSafely()
                 }
             }
@@ -101,6 +97,10 @@ internal class VideoFrameRenderer(private val onError: (stage: String, error: Th
         post {
             outputWidth = width.coerceAtLeast(0)
             outputHeight = height.coerceAtLeast(0)
+            // Draw a frame that arrived before the output surface was sized.
+            if (hasTextureImage && outputWidth > 0 && outputHeight > 0) {
+                renderFrame(updateTexture = false)
+            }
         }
     }
 
@@ -143,23 +143,17 @@ internal class VideoFrameRenderer(private val onError: (stage: String, error: Th
         failed = failed.get()
     )
 
-    fun releaseAndWait(timeoutMs: Long = RELEASE_TIMEOUT_MS): Boolean {
+    // Release GL objects on their render thread without blocking WallpaperService.
+    // The EGL display remains alive while other renderers retain a reference.
+    fun releaseAsync() {
         if (released.compareAndSet(false, true)) {
             renderHandler.post {
                 try {
                     releaseGlResources()
                 } finally {
-                    releaseCompleted.countDown()
                     renderThread.quitSafely()
                 }
             }
-        }
-
-        return try {
-            releaseCompleted.await(timeoutMs, TimeUnit.MILLISECONDS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
         }
     }
 
@@ -547,7 +541,6 @@ internal class VideoFrameRenderer(private val onError: (stage: String, error: Th
     companion object {
         private const val SCALE_MODE_STRETCH = "stretch"
         private const val SCALE_MODE_CROP = "crop"
-        private const val RELEASE_TIMEOUT_MS = 2_000L
 
         private val eglDisplayLock = Any()
         private var sharedEglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
