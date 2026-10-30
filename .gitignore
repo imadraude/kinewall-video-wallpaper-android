@@ -34,3 +34,9 @@
 kinewall-diagnostics-*.txt
 *.txt
 *.patch
+
+# Android release signing keys (never commit these)
+*.jks
+*.keystore
+*.p12
+*.pfx
