@@ -5,6 +5,13 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val releaseVersionName = System.getenv("KINEWALL_RELEASE_VERSION_NAME")
+val releaseVersionCode = System.getenv("KINEWALL_RELEASE_VERSION_CODE")?.toIntOrNull()
+val releaseKeystoreFile = System.getenv("KINEWALL_KEYSTORE_FILE")
+val releaseKeystorePassword = System.getenv("KINEWALL_KEYSTORE_PASSWORD")
+val releaseSigningReady = !releaseKeystoreFile.isNullOrBlank() &&
+    !releaseKeystorePassword.isNullOrBlank()
+
 android {
     namespace = "com.eaangrino.kinewall"
     compileSdk {
@@ -14,17 +21,33 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.eaangrino.kinewall"
+        // A separate application ID prevents signature conflicts with the upstream app.
+        applicationId = "ua.imadraude.kinewall"
         minSdk = 30
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.9.0"
+        versionCode = releaseVersionCode ?: 8
+        versionName = releaseVersionName ?: "0.9.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("obtainiumRelease") {
+                storeFile = file(requireNotNull(releaseKeystoreFile))
+                storePassword = releaseKeystorePassword
+                keyAlias = "kinewall"
+                keyPassword = releaseKeystorePassword
+                storeType = "PKCS12"
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("obtainiumRelease")
+            }
             optimization {
                 enable = false
             }
