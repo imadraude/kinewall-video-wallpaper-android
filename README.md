@@ -146,6 +146,44 @@ app/build/outputs/apk/
 
 The project can also be opened directly in Android Studio and run on an Android 11+ device.
 
+## Install and update this fork with Obtainium
+
+This fork ships an independent Android package: **`ua.imadraude.kinewall`**.
+It can be installed alongside the original KineWall app, but it does **not**
+inherit the original app's database or wallpaper settings.
+
+**Source URL for Obtainium:** https://github.com/imadraude/kinewall-video-wallpaper-android
+
+The [Obtainium Release workflow](.github/workflows/obtainium-release.yml)
+runs when a stable tag (e.g. `v0.9.1`) is pushed for a commit already
+merged into `main`. It runs unit tests, builds and verifies a **signed**
+release APK, then creates a GitHub Release with a download named
+`KineWall-v0.9.1-universal.apk` and a matching SHA-256 checksum file.
+Android `versionCode` and `versionName` come from the version tag;
+new versions must have increasing version numbers.
+
+**First-time release signing setup** (GitHub repository owner only):
+
+1. Generate and securely back up a permanent PKCS#12 Android signing key
+   with alias `kinewall`. Never commit it to Git or publish it in a release.
+2. Open [Actions secrets](https://github.com/imadraude/kinewall-video-wallpaper-android/settings/secrets/actions).
+3. Create secret `KINEWALL_KEYSTORE_BASE64`: the complete Base64-encoded bytes
+   of the PKCS#12 keystore.
+4. Create secret `KINEWALL_KEYSTORE_PASSWORD`: its store/key password.
+5. After the debug CI checks on `main` pass, create and push a version tag,
+   for example `v0.9.1`, pointing to the latest `main` commit.
+6. Confirm the **Obtainium Release** workflow succeeded and
+   [GitHub Releases](https://github.com/imadraude/kinewall-video-wallpaper-android/releases)
+   contains the APK.
+7. In Obtainium tap **Add App**, paste the repository URL above and select
+   GitHub as the source. Keep prereleases excluded for stable updates.
+
+**Important:** The signing key must remain **the same for all subsequent
+releases** or Android will refuse in-place upgrades. Debug APKs use a
+different signing key, so switch to an official signed fork release before
+using Obtainium upgrades. GitHub Actions releases are published only when
+the two signing secrets exist; normal pull-request builds remain debug-only.
+
 ## Automated GitHub Actions builds (fork)
 
 This fork builds an **installable debug APK** and runs JVM unit tests with GitHub Actions:
