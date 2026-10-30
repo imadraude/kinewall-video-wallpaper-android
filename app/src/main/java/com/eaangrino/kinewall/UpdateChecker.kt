@@ -15,7 +15,7 @@ internal data class ReleaseCheckResult(
 
 internal object UpdateChecker {
     private const val LATEST_RELEASE_URL =
-        "https://api.github.com/repos/eaangrino/kinewall-video-wallpaper-android/releases/latest"
+        "https://api.github.com/repos/imadraude/kinewall-video-wallpaper-android/releases/latest"
 
     fun check(currentVersion: String): ReleaseCheckResult? {
         val connection = (URL(LATEST_RELEASE_URL).openConnection() as HttpURLConnection).apply {
